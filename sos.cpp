@@ -45,10 +45,6 @@ struct ShortestFirst {
     }
 };
 
-// -------------------------------------------------------------
-//  File reader
-//  Format per line:  name;arrival;total_cpu;io_every;io_len
-// -------------------------------------------------------------
 
 vector<Process> load(const string& path) {
     vector<Process> v;
