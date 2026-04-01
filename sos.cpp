@@ -45,8 +45,6 @@ struct ShortestFirst {
     }
 };
 
-struct GanttSlice { int start, end; string who; };
-
 // -------------------------------------------------------------
 //  File reader
 //  Format per line:  name;arrival;total_cpu;io_every;io_len
@@ -72,64 +70,6 @@ vector<Process> load(const string& path) {
         return a.arrival < b.arrival || (a.arrival == b.arrival && a.name < b.name);
     });
     return v;
-}
-
-
-static const int CELL_W       = 6;   // chars per time unit
-static const int MAX_ROW_UNITS = 20; // time units per row before wrapping
-
-
-static string centre(const string& s, int w) {
-    int pad = w - (int)s.size();
-    if (pad <= 0) return s.substr(0, w);
-    int l = pad / 2, r = pad - l;
-    return string(l, ' ') + s + string(r, ' ');
-}
-
-void print_gantt(const vector<GanttSlice>& slices) {
-    if (slices.empty()) return;
-
-    vector<pair<int,string>> units;
-    for (auto& s : slices)
-        for (int t = s.start; t < s.end; t++)
-            units.push_back({t, s.who});
-
-    const int total = (int)units.size();
-    if (total == 0) return;
-
-    const string H  = string(CELL_W, '-');
-    const string TL = "+", TM = "+", TR = "+";
-    const string ML = "|",             MR = "|";
-    const string BL = "+", BM = "+", BR = "+";
-
-    cout << "\n";
-    for (int rs = 0; rs < total; rs += MAX_ROW_UNITS) {
-        int re = min(rs + MAX_ROW_UNITS, total);
-
-        // top border
-        cout << "  " << TL;
-        for (int i = rs; i < re; i++) cout << H << (i+1 < re ? TM : TR);
-        cout << "\n";
-
-        // labels
-        cout << "  " << ML;
-        for (int i = rs; i < re; i++) cout << centre(units[i].second, CELL_W) << MR;
-        cout << "\n";
-
-        // bottom border
-        cout << "  " << BL;
-        for (int i = rs; i < re; i++) cout << H << (i+1 < re ? BM : BR);
-        cout << "\n";
-
-        // time axis: number under each left-edge, plus the final right-edge
-        cout << "  ";
-        for (int i = rs; i < re; i++)
-            cout << left << setw(CELL_W) << units[i].first;
-        cout << units[re-1].first + 1 << "\n";
-
-        if (re < total) cout << "\n";
-    }
-    cout << "\n";
 }
 
 
@@ -222,7 +162,6 @@ static void print_comparison(const vector<Summary>& S) {
 }
 
 
-
 // Pull processes that have arrived into the ready structure
 static void admit(vector<Process*>& job, const function<void(Process*)>& push_ready, int t) {
     vector<Process*> leftover;
@@ -257,7 +196,6 @@ static void dispatch_io(Process* p, int t, vector<Process*>& io) {
     sort(io.begin(), io.end(), [](Process* a, Process* b){ return a->io_until < b->io_until; });
 }
 
-// Each algorithm needs fresh Process objects so they don't share state.
 static vector<Process*> clone(const vector<Process>& src) {
     vector<Process*> v;
     for (auto& p : src) v.push_back(new Process(p));
@@ -265,15 +203,12 @@ static vector<Process*> clone(const vector<Process>& src) {
 }
 static void release(vector<Process*>& v) { for (auto* p : v) delete p; v.clear(); }
 
-// Build a vector<string> of ready-queue names for show_queues()
-// (accepts either deque or vector as source)
 template<typename Container>
 static vector<string> names(const Container& c) {
     vector<string> v;
     for (auto* p : c) v.push_back(p->name);
     return v;
 }
-// Overload for priority_queue (drain a copy)
 static vector<string> pq_names(priority_queue<Process*, vector<Process*>, ShortestFirst> pq) {
     vector<string> v;
     while (!pq.empty()) { v.push_back(pq.top()->name); pq.pop(); }
@@ -281,67 +216,13 @@ static vector<string> pq_names(priority_queue<Process*, vector<Process*>, Shorte
 }
 
 
-Summary run_fcfs(const vector<Process>& src, bool verbose) {
-    cout << "\n  == FCFS  (First Come First Served)  - Non-Preemptive ==\n\n";
-
-    auto all = clone(src);
-    vector<Process*> job = all;
-    deque<Process*>  ready;      // plain FIFO - deque gives O(1) push_back + pop_front
-    vector<Process*> io, done;
-    vector<GanttSlice> gantt;
-    Process* cpu = nullptr;
-    int t = 0;
-
-    auto push_ready = [&](Process* p){ ready.push_back(p); };
-
-    while ((int)done.size() < (int)all.size()) {
-        admit(job, push_ready, t);
-        collect_io(io, push_ready, t);
-
-        if (!cpu && !ready.empty()) {
-            cpu = ready.front(); ready.pop_front();
-            if (cpu->started_at == -1) cpu->started_at = t;
-            cpu->wait_total += t - cpu->ready_since;
-            if (verbose) show_queues(t, job, names(ready), io, cpu, "dispatch " + cpu->name);
-        }
-
-        if (!cpu) {
-            int nxt = earliest_event(job, io);
-            if (nxt == -1) break;
-            if (nxt > t) gantt.push_back({t, nxt, "IDLE"});
-            t = nxt; continue;
-        }
-
-        cpu->remaining--; cpu->slice_done++; t++;
-        admit(job, push_ready, t);
-        collect_io(io, push_ready, t);
-
-        if (cpu->wants_io()) {
-            gantt.push_back({t - cpu->slice_done, t, cpu->name});
-            if (verbose) show_queues(t, job, names(ready), io, cpu, cpu->name + " -> I/O");
-            dispatch_io(cpu, t, io); cpu = nullptr;
-
-        } else if (cpu->remaining == 0) {
-            gantt.push_back({t - cpu->slice_done, t, cpu->name});
-            cpu->finished_at = t;
-            if (verbose) show_queues(t, job, names(ready), io, nullptr, cpu->name + " finished");
-            done.push_back(cpu); cpu = nullptr;
-        }
-    }
-
-    print_gantt(gantt);
-    auto s = print_metrics("FCFS", done, t);
-    release(all); return s;
-}
-
 Summary run_rr(const vector<Process>& src, int quantum, bool verbose) {
     cout << "\n  == Round Robin  (quantum=" << quantum << ")  - Preemptive ==\n\n";
 
     auto all = clone(src);
     vector<Process*> job = all;
-    deque<Process*>  ready;     // circular rotation: pop_front to run, push_back to queue
+    deque<Process*>  ready;
     vector<Process*> io, done;
-    vector<GanttSlice> gantt;
     Process* cpu   = nullptr;
     int t = 0, q = 0, gs = 0;
 
@@ -362,7 +243,6 @@ Summary run_rr(const vector<Process>& src, int quantum, bool verbose) {
         if (!cpu) {
             int nxt = earliest_event(job, io);
             if (nxt == -1) break;
-            if (nxt > t) gantt.push_back({t, nxt, "IDLE"});
             t = nxt; continue;
         }
 
@@ -371,26 +251,22 @@ Summary run_rr(const vector<Process>& src, int quantum, bool verbose) {
         collect_io(io, push_ready, t);
 
         if (cpu->wants_io()) {
-            gantt.push_back({gs, t, cpu->name});
             if (verbose) show_queues(t, job, names(ready), io, cpu, cpu->name + " -> I/O");
             dispatch_io(cpu, t, io); cpu = nullptr; q = 0;
 
         } else if (cpu->remaining == 0) {
-            gantt.push_back({gs, t, cpu->name});
             cpu->finished_at = t;
             if (verbose) show_queues(t, job, names(ready), io, nullptr, cpu->name + " finished");
             done.push_back(cpu); cpu = nullptr; q = 0;
 
         } else if (q == quantum) {
-            gantt.push_back({gs, t, cpu->name});
             if (verbose) show_queues(t, job, names(ready), io, cpu, cpu->name + " preempted");
             cpu->ready_since = t;
-            ready.push_back(cpu);    // goes to the back - that's what makes it round robin
+            ready.push_back(cpu);
             cpu = nullptr; q = 0;
         }
     }
 
-    print_gantt(gantt);
     auto s = print_metrics("Round Robin (q=" + to_string(quantum) + ")", done, t);
     release(all); return s;
 }
@@ -401,10 +277,8 @@ Summary run_sjf(const vector<Process>& src, bool verbose) {
 
     auto all = clone(src);
     vector<Process*> job = all;
-    // min-heap: always gives us the process with the least remaining_cpu
     priority_queue<Process*, vector<Process*>, ShortestFirst> ready;
     vector<Process*> io, done;
-    vector<GanttSlice> gantt;
     Process* cpu = nullptr;
     int t = 0;
 
@@ -415,7 +289,7 @@ Summary run_sjf(const vector<Process>& src, bool verbose) {
         collect_io(io, push_ready, t);
 
         if (!cpu && !ready.empty()) {
-            cpu = ready.top(); ready.pop();   // O(log n) extract-min
+            cpu = ready.top(); ready.pop();
             if (cpu->started_at == -1) cpu->started_at = t;
             cpu->wait_total += t - cpu->ready_since;
             if (verbose) show_queues(t, job, pq_names(ready), io, cpu,
@@ -425,29 +299,24 @@ Summary run_sjf(const vector<Process>& src, bool verbose) {
         if (!cpu) {
             int nxt = earliest_event(job, io);
             if (nxt == -1) break;
-            if (nxt > t) gantt.push_back({t, nxt, "IDLE"});
             t = nxt; continue;
         }
-
 
         cpu->remaining--; cpu->slice_done++; t++;
         admit(job, push_ready, t);
         collect_io(io, push_ready, t);
 
         if (cpu->wants_io()) {
-            gantt.push_back({t - cpu->slice_done, t, cpu->name});
             if (verbose) show_queues(t, job, pq_names(ready), io, cpu, cpu->name + " -> I/O");
             dispatch_io(cpu, t, io); cpu = nullptr;
 
         } else if (cpu->remaining == 0) {
-            gantt.push_back({t - cpu->slice_done, t, cpu->name});
             cpu->finished_at = t;
             if (verbose) show_queues(t, job, pq_names(ready), io, nullptr, cpu->name + " finished");
             done.push_back(cpu); cpu = nullptr;
         }
     }
 
-    print_gantt(gantt);
     auto s = print_metrics("SJF", done, t);
     release(all); return s;
 }
@@ -460,7 +329,6 @@ Summary run_srtf(const vector<Process>& src, bool verbose) {
     vector<Process*> job = all;
     priority_queue<Process*, vector<Process*>, ShortestFirst> ready;
     vector<Process*> io, done;
-    vector<GanttSlice> gantt;
     Process* cpu = nullptr;
     int t = 0, gs = 0;
 
@@ -468,7 +336,6 @@ Summary run_srtf(const vector<Process>& src, bool verbose) {
 
     auto try_preempt = [&](int now) {
         if (cpu && !ready.empty() && ready.top()->remaining < cpu->remaining) {
-            if (now > gs) gantt.push_back({gs, now, cpu->name});
             cpu->ready_since = now;
             ready.push(cpu);
             if (verbose) show_queues(now, job, pq_names(ready), io, cpu,
@@ -494,7 +361,6 @@ Summary run_srtf(const vector<Process>& src, bool verbose) {
         if (!cpu) {
             int nxt = earliest_event(job, io);
             if (nxt == -1) break;
-            if (nxt > t) gantt.push_back({t, nxt, "IDLE"});
             t = nxt; continue;
         }
 
@@ -503,12 +369,10 @@ Summary run_srtf(const vector<Process>& src, bool verbose) {
         collect_io(io, push_ready, t);
 
         if (cpu->wants_io()) {
-            gantt.push_back({gs, t, cpu->name});
             if (verbose) show_queues(t, job, pq_names(ready), io, cpu, cpu->name + " -> I/O");
             dispatch_io(cpu, t, io); cpu = nullptr;
 
         } else if (cpu->remaining == 0) {
-            gantt.push_back({gs, t, cpu->name});
             cpu->finished_at = t;
             if (verbose) show_queues(t, job, pq_names(ready), io, nullptr, cpu->name + " finished");
             done.push_back(cpu); cpu = nullptr;
@@ -518,13 +382,13 @@ Summary run_srtf(const vector<Process>& src, bool verbose) {
         }
     }
 
-    print_gantt(gantt);
     auto s = print_metrics("SRTF", done, t);
     release(all); return s;
 }
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
-        cout << "Usage: ./scheduler <input.txt> [--algo fcfs|rr|sjf|srtf|all]"
+        cout << "Usage: ./scheduler <input.txt> [--algo rr|sjf|srtf|all]"
                 " [--quantum N] [--quiet]\n";
         return 1;
     }
@@ -555,7 +419,6 @@ int main(int argc, char* argv[]) {
     cout << "\n";
 
     vector<Summary> results;
-    if (algo == "fcfs" || algo == "all") results.push_back(run_fcfs(procs, verbose));
     if (algo == "rr"   || algo == "all") results.push_back(run_rr  (procs, quantum, verbose));
     if (algo == "sjf"  || algo == "all") results.push_back(run_sjf (procs, verbose));
     if (algo == "srtf" || algo == "all") results.push_back(run_srtf(procs, verbose));
